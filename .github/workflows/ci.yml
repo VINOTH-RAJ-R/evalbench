@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - name: run the suite with no API key present
+        env:
+          OPENAI_API_KEY: ""
+          EVALBENCH_API_KEY: ""
+        run: pytest
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  quickstart:
+    name: the README quickstart actually works
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: is there a quickstart to run at this commit?
+        id: ready
+        run: |
+          if [ -f examples/sample.jsonl ] && [ -f src/evalbench/cli.py ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "CLI or sample dataset not present yet; nothing to run."
+          fi
+      - if: steps.ready.outputs.ready == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - if: steps.ready.outputs.ready == 'true'
+        run: pip install -e .
+      - if: steps.ready.outputs.ready == 'true'
+        name: run against the shipped sample with no key
+        run: |
+          evalbench run --examples examples/sample.jsonl \
+            --models mock-a,mock-b,mock-c --repeat 3 \
+            --pricing examples/pricing.example.json --out run.json
+      - if: steps.ready.outputs.ready == 'true'
+        name: baseline and diff round trip
+        run: |
+          evalbench baseline save run.json --name ci
+          evalbench diff run.json --against ci --fail-on-regression
